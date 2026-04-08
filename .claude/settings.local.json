@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "github",
+    "filesystem"
+  ]
+}
