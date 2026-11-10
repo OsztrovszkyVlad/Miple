@@ -128,6 +128,22 @@ Click the **‹** tab on the right edge of the screen to open the drawer, and
 press **Esc** (or click **›**) to close it. Launching Miple again from the
 menu just opens the drawer of the copy that's already running.
 
+The drawer has three tabs:
+
+- **Chat**: talk to Miple. One request can take several steps: Miple runs an
+  action, reads the result, and continues until the request is done (at most
+  5 steps). Actions that change files or install software always stop and
+  wait for **Yes, do it**.
+- **Notes**: the notes Miple has saved.
+- **AI**: whether Ollama is installed and running, which model is in use and
+  whether it's loaded (GPU/CPU), the best model for your computer, and your
+  downloaded models. From here you can start or install Ollama, load the
+  model, switch models, or download the recommended one. If chat says it
+  can't reach Ollama, look here first.
+
+After setup, Miple loads the model in the background and asks Ollama to keep
+it in memory for 30 minutes, so replies start quickly.
+
 ### Command-line options
 
 ```
@@ -147,11 +163,15 @@ Everything is optional and set through environment variables:
 | `MIPLE_MODEL` | chosen automatically | Force a specific Ollama model |
 | `MIPLE_OLLAMA_URL` | `http://localhost:11434` | Ollama server address |
 | `MIPLE_NOTES_DIR` | `~/Documents/miple-notes` | Where notes are saved |
-| `MIPLE_TIMEOUT` | `120` | Seconds to wait for a reply (the first load of a model is slow) |
+| `MIPLE_TIMEOUT` | `300` | Seconds to wait for a reply (the first load of a model is slow) |
+| `MIPLE_LOAD_TIMEOUT` | `900` | Seconds to wait when loading a model ahead of time |
+| `MIPLE_KEEP_ALIVE` | `30m` | How long Ollama keeps the model in memory after the last message |
 | `MIPLE_CONFIG_DIR` | see below | Where settings and the log file live |
 | `MIPLE_DEBUG` | unset | `1` turns on debug logging |
 
-Settings (the chosen model) and a rotating log file `miple.log` are kept in
+Settings (the chosen model), a rotating log file `miple.log` and
+`agent-steps.jsonl` (one JSON line per agent step: the model's output, the
+action, its result and how long it took; it stays on your machine) are kept in
 `~/.config/miple/` on Linux, `%APPDATA%\Miple\` on Windows and
 `~/Library/Application Support/Miple/` on macOS.
 
@@ -211,7 +231,9 @@ src/agent/
   ollama.py              async Ollama client: streaming, model detection, friendly errors
   parser.py              find and strip the action block in a reply
   actions.py             normalise and dispatch actions; preview vs. confirm
-  session.py             conversation state + background event loop
+  session.py             conversation state, agent loop (≤ 5 steps), background event loop
+  step_log.py            JSON-lines log of every agent step
+  ai_manager.py          status + controls behind the AI tab
   setup.py               start-up checks: start/install Ollama, pick + download a model
   models.py              model catalogue and hardware-based recommendation
 src/actions/             everything that touches the system lives here
@@ -228,6 +250,7 @@ src/ui/                  PyQt6 widgets only, no business logic
   notes.py               notes browser / reader
   quickactions.py        quick-action pill buttons
   setup.py               first-run setup panel
+  ai_settings.py         AI tab: Ollama status, models, download
 assets/                  app icon (svg, png, ico)
 install.sh, install.ps1  one-command installers
 tests/                   pytest suite (UI tests run headless)
@@ -259,6 +282,7 @@ Adding a new action:
 
 | Symptom | Fix |
 |---|---|
+| *"The AI model is taking longer than expected"* | The model was still loading. Wait a moment and try again, or click **Load now** in the AI tab. |
 | Setup says Ollama didn't start | Restart the computer; on Linux check `systemctl status ollama`. Also check `MIPLE_OLLAMA_URL`. |
 | *"Ollama doesn't have the model …"* | Start Miple with `--reset-model` to run setup again, or set `MIPLE_MODEL` to a model you have (`ollama list`). |
 | Automatic Ollama install isn't offered | Your system has no `winget` (Windows) or `pkexec` + `curl` (Linux): install Ollama from https://ollama.com/download and click **Retry**. |
@@ -271,7 +295,6 @@ Adding a new action:
 ## Roadmap
 
 - System info chat action (reuse `src/actions/system.py`)
-- Switch models from inside the app
 - Undo for file organization
 - Streaming replies token by token
 - `.deb` / Flatpak packaging

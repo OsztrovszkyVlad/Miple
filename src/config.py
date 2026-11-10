@@ -20,5 +20,11 @@ NOTES_DIR: Path = Path(
 ).expanduser()
 """Directory where notes are written and read."""
 
-REQUEST_TIMEOUT: float = float(os.environ.get("MIPLE_TIMEOUT", "120"))
-"""Seconds to wait for Ollama before giving up (first load of a model is slow)."""
+REQUEST_TIMEOUT: float = float(os.environ.get("MIPLE_TIMEOUT", "300"))
+"""Seconds to wait for the model's reply before giving up (first load of a model is slow)."""
+
+LOAD_TIMEOUT: float = float(os.environ.get("MIPLE_LOAD_TIMEOUT", "900"))
+"""Seconds to wait when loading a model into memory ahead of time."""
+
+KEEP_ALIVE: str = os.environ.get("MIPLE_KEEP_ALIVE", "30m")
+"""How long Ollama keeps the model in memory after the last message (Ollama syntax)."""

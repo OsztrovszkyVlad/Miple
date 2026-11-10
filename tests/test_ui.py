@@ -47,6 +47,21 @@ class FakeSetup:
         self.clicks.append("secondary")
 
 
+class FakeAI:
+    """AIManager stand-in that records which buttons were pressed."""
+
+    def __init__(self):
+        from src.agent.ai_manager import AIStatus
+
+        self.status = AIStatus()
+        self.calls: list[tuple] = []
+
+    def __getattr__(self, name):
+        if name in ("refresh", "start_ollama", "install_ollama", "warm_up", "use_model", "download"):
+            return lambda *args: self.calls.append((name, *args))
+        raise AttributeError(name)
+
+
 def _state(stage_name, **kw):
     from src.agent.setup import SetupState, Stage
 
@@ -57,7 +72,7 @@ def _state(stage_name, **kw):
 def unready_drawer(qapp):
     from src.ui.drawer import DrawerWindow
 
-    win = DrawerWindow(session=FakeSession(), setup=FakeSetup())
+    win = DrawerWindow(session=FakeSession(), setup=FakeSetup(), ai=FakeAI())
     yield win
     win.close()
 
@@ -161,3 +176,124 @@ def test_notes_view_lists_saved_notes(qapp):
     view = NotesView()
     cards = view.findChildren(NoteCard)
     assert len(cards) == 1
+
+
+# ---------------------------------------------------------------------------
+# Multi-step replies and the AI tab
+# ---------------------------------------------------------------------------
+
+def test_reply_shows_every_step_result(drawer):
+    from src.ui.chat import MessageBubble
+
+    before = len(drawer._chat._container.findChildren(MessageBubble))
+    pending = {"action": "organize_files", "params": {"path": "~/Downloads"}}
+    steps = [ActionResult("Note saved to x"), ActionResult("plan…", True, pending)]
+    drawer._on_reply(Reply("Done.", action=steps[-1], steps=steps))
+    texts = [b._label.text() for b in drawer._chat._container.findChildren(MessageBubble)][before:]
+    assert texts == ["Done.", "Note saved to x", "plan…"]
+    assert drawer._confirm_btn is not None  # the last step still needs confirmation
+
+
+def test_setup_ready_warms_up_model_once(drawer):
+    assert drawer._ai.calls.count(("warm_up",)) == 1
+    drawer._on_setup_state(_state("READY", model="gemma4:e4b"))
+    assert drawer._ai.calls.count(("warm_up",)) == 1
+
+
+def test_opening_ai_tab_refreshes(drawer):
+    drawer._tabs.setCurrentWidget(drawer._ai_view)
+    assert ("refresh",) in drawer._ai.calls
+
+
+def test_model_picked_in_ai_tab_finishes_setup(unready_drawer):
+    win = unready_drawer
+    win._on_model_changed("llama3.2:3b")
+    assert win._chat_stack.currentIndex() == 1
+    assert win._session.model == "llama3.2:3b"
+    assert "llama3.2:3b" in win._subtitle.text()
+
+
+def _ai_status(**kw):
+    from src.actions.system import HardwareInfo
+    from src.agent import models
+    from src.agent.ai_manager import AIStatus
+    from src.agent.ollama import InstalledModel, LoadedModel
+
+    hw = HardwareInfo("Windows", 31, 24, 600)
+    base = dict(
+        installed=True, running=True, can_install=True, version="0.40.16",
+        current_model="gemma4:e4b",
+        models=(InstalledModel("gemma4:e4b", 6.6), InstalledModel("llama3.2:3b", 2.0)),
+        loaded=(LoadedModel("gemma4:e4b", 7.0, 1.0),),
+        recommended=models.recommend(hw), hardware=hw.summary(),
+    )
+    base.update(kw)
+    return AIStatus(**base)
+
+
+def _ai_view():
+    from src.ui.ai_settings import AICallbacks, AISettingsView
+
+    calls = []
+    cb = AICallbacks(
+        refresh=lambda: calls.append("refresh"), start=lambda: calls.append("start"),
+        install=lambda: calls.append("install"), load=lambda: calls.append("load"),
+        use=lambda name: calls.append(("use", name)), download=lambda tag: calls.append(("download", tag)),
+    )
+    return AISettingsView(cb), calls
+
+
+def test_ai_view_connected_and_loaded(qapp):
+    from PyQt6.QtWidgets import QPushButton
+
+    view, calls = _ai_view()
+    view.show_status(_ai_status())
+    assert "Connected" in view._ollama_state.text() and "0.40.16" in view._ollama_state.text()
+    assert "loaded (GPU)" in view._model_state.text()
+    assert view._start_btn.isHidden() and view._install_btn.isHidden()
+    assert view._load_btn.isHidden() and view._download_btn.isHidden()
+    use_buttons = [b for b in view.findChildren(QPushButton) if b.text() == "Use"]
+    assert len(use_buttons) == 1
+    use_buttons[0].click()
+    assert calls == [("use", "llama3.2:3b")]
+
+
+def test_ai_view_not_running(qapp):
+    view, calls = _ai_view()
+    view.show_status(_ai_status(running=False, version=None, models=(), loaded=()))
+    assert "not running" in view._ollama_state.text()
+    assert not view._start_btn.isHidden()
+    view._start_btn.click()
+    assert calls == ["start"]
+
+
+def test_ai_view_not_installed_offers_install(qapp):
+    view, calls = _ai_view()
+    view.show_status(_ai_status(installed=False, running=False, version=None, models=(), loaded=()))
+    assert "Not installed" in view._ollama_state.text()
+    view._install_btn.click()
+    assert calls == ["install"]
+
+
+def test_ai_view_offers_download_and_load(qapp):
+    view, calls = _ai_view()
+    view.show_status(_ai_status(models=(), loaded=(), current_model=None))
+    assert not view._download_btn.isHidden()
+    assert "6.6 GB" in view._download_btn.text()
+    view._download_btn.click()
+    assert calls == [("download", "gemma4:e4b")]
+
+    view.show_status(_ai_status(loaded=()))
+    assert "not loaded yet" in view._model_state.text()
+    view._load_btn.click()
+    assert calls[-1] == "load"
+
+
+def test_ai_view_busy_disables_buttons(qapp):
+    view, _ = _ai_view()
+    view.show_status(_ai_status(busy="Downloading… 1.0 of 6.6 GB", progress=0.15, error=None))
+    assert not view._refresh_btn.isEnabled()
+    assert view._progress.value() == 150
+    view.show_status(_ai_status(error="The download stopped: offline"))
+    assert view._refresh_btn.isEnabled()
+    assert "offline" in view._error.text()

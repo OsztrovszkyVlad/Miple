@@ -11,22 +11,34 @@ from src import config
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are Miple, a Linux AI assistant. Always end your reply with an action block.\n"
-    "Examples:\n"
+    "You are Miple, a friendly assistant running on the user's own computer.\n"
+    "You can act by ending your reply with ONE action block, for example:\n"
     "User: search for cats → Sure! {action: 'google_search', params: {query: 'cats'}}\n"
     "User: open vlc → Opening VLC! {action: 'open_app', params: {name: 'vlc'}}\n"
-    "User: open terminal → Opening terminal! {action: 'open_app', params: {name: 'terminal'}}\n"
-    "User: install vlc → Installing VLC! {action: 'install_app', params: {name: 'vlc'}}\n"
-    "User: organize downloads → {action: 'organize_files', params: {path: '~/Downloads'}}\n"
-    "User: open files → Opening file manager! {action: 'open_app', params: {name: 'files'}}\n"
-    "User: fix error → Paste your error and I'll explain it. {action: 'explain_error', params: {error_text: 'the error'}}\n"
+    "User: open files → Opening the file manager! {action: 'open_app', params: {name: 'files'}}\n"
+    "User: install vlc → I'll install VLC. {action: 'install_app', params: {name: 'vlc'}}\n"
+    "User: organize downloads → Here's my plan. {action: 'organize_files', params: {path: '~/Downloads'}}\n"
+    "User: <pasted error> → Let me look. {action: 'explain_error', params: {error_text: '<the error>'}}\n"
     "User: remind me to buy milk → Got it! {action: 'save_note', params: {content: 'buy milk', title: 'reminder'}}\n"
-    "Always include the action block. Keep replies under 2 sentences."
+    "Rules:\n"
+    "- Only add an action block when the user's request needs one. For questions and chat, just answer.\n"
+    "- After an action runs you get a message starting with [Action result]. It comes from Miple, "
+    "not the user. Then tell the user what happened in one short sentence WITHOUT an action block, "
+    "unless another, different action is still needed.\n"
+    "- Never repeat an action that already succeeded.\n"
+    "- If a result says the user must confirm, just say they can review the plan and click "
+    "'Yes, do it'.\n"
+    "Keep replies under 2 sentences."
 )
 
 _FRIENDLY_ERROR = (
     "I couldn't connect to Ollama. "
-    "Make sure Ollama is running (`ollama serve`) and try again."
+    "Open the AI tab to start it, or check that Ollama is running."
+)
+
+_SLOW_ERROR = (
+    "The AI model is taking longer than expected — it may still be loading into memory. "
+    "Please try again in a moment."
 )
 
 _MODEL_MISSING_PREFIX = "Ollama doesn't have the model"
@@ -48,9 +60,36 @@ class PullProgress:
         return self.completed / self.total if self.total else None
 
 
+@dataclass(frozen=True)
+class InstalledModel:
+    """A model downloaded into Ollama."""
+
+    name: str
+    size_gb: float
+
+
+@dataclass(frozen=True)
+class LoadedModel:
+    """A model currently loaded in memory (from /api/ps)."""
+
+    name: str
+    size_gb: float
+    gpu_share: float  # 0–1, how much of it sits in graphics memory
+
+    @property
+    def placement(self) -> str:
+        """'GPU', 'CPU' or e.g. '62% GPU / 38% CPU'."""
+        if self.gpu_share >= 0.99:
+            return "GPU"
+        if self.gpu_share <= 0.01:
+            return "CPU"
+        gpu = round(self.gpu_share * 100)
+        return f"{gpu}% GPU / {100 - gpu}% CPU"
+
+
 def is_error_message(text: str) -> bool:
     """Return True if *text* is one of the client's user-facing error messages."""
-    return text == _FRIENDLY_ERROR or text.startswith(_MODEL_MISSING_PREFIX)
+    return text in (_FRIENDLY_ERROR, _SLOW_ERROR) or text.startswith(_MODEL_MISSING_PREFIX)
 
 
 def _http_error_message(exc: httpx.HTTPStatusError, model: str) -> str:
@@ -120,6 +159,68 @@ class OllamaClient:
             return None
         return [m["name"] for m in models if "name" in m]
 
+    @property
+    def model(self) -> str | None:
+        """The model explicitly chosen or detected so far (None if not yet known)."""
+        return self._model
+
+    async def version(self) -> str | None:
+        """Ollama's version string, or None if it can't be reached."""
+        data = await self._get_json("/api/version")
+        return data.get("version") if data else None
+
+    async def installed_models(self) -> list[InstalledModel] | None:
+        """Downloaded models with their sizes, or None if Ollama can't be reached."""
+        data = await self._get_json("/api/tags")
+        if data is None:
+            return None
+        return [
+            InstalledModel(m["name"], round(int(m.get("size") or 0) / 1024**3, 1))
+            for m in data.get("models", [])
+            if "name" in m
+        ]
+
+    async def loaded_models(self) -> list[LoadedModel] | None:
+        """Models currently in memory, or None if Ollama can't be reached."""
+        data = await self._get_json("/api/ps")
+        if data is None:
+            return None
+        loaded = []
+        for m in data.get("models", []):
+            size = int(m.get("size") or 0)
+            vram = int(m.get("size_vram") or 0)
+            share = vram / size if size else 0.0
+            loaded.append(LoadedModel(m.get("name", "?"), round(size / 1024**3, 1), min(share, 1.0)))
+        return loaded
+
+    async def warm_up(self, model: str | None = None) -> bool:
+        """Load *model* (default: the current one) into memory so replies start fast.
+
+        Returns True when the model is loaded. Can take minutes the first time.
+        """
+        model = model or await self.get_model()
+        try:
+            resp = await self._client.post(
+                f"{self._base_url}/api/generate",
+                json={"model": model, "keep_alive": config.KEEP_ALIVE},
+                timeout=httpx.Timeout(config.LOAD_TIMEOUT, connect=5.0),
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("Could not load %s: %s", model, exc)
+            return False
+        logger.info("Model %s loaded", model)
+        return True
+
+    async def _get_json(self, path: str) -> dict | None:
+        try:
+            resp = await self._client.get(f"{self._base_url}{path}", timeout=5.0)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.debug("GET %s failed: %s", path, exc)
+            return None
+
     async def pull(self, model: str) -> AsyncIterator[PullProgress]:
         """Download *model*, yielding progress updates.
 
@@ -177,7 +278,12 @@ class OllamaClient:
         """
         full_messages = self._with_system_prompt(messages)
         model = await self.get_model()
-        payload = {"model": model, "messages": full_messages, "stream": stream}
+        payload = {
+            "model": model,
+            "messages": full_messages,
+            "stream": stream,
+            "keep_alive": config.KEEP_ALIVE,  # stay loaded between messages
+        }
         try:
             if stream:
                 async for token in self._stream(payload):
@@ -205,11 +311,15 @@ class OllamaClient:
                     content = data.get("message", {}).get("content", "")
                     if content:
                         yield content
-                    if data.get("done"):
-                        break
+                    # No `break` on "done": Ollama ends the stream right after it, and
+                    # reading to the end lets httpx close the response cleanly.
         except httpx.HTTPStatusError as exc:
             logger.warning("Ollama returned an error: %s", exc)
             yield _http_error_message(exc, payload.get("model", ""))
+        except (httpx.ReadTimeout, httpx.PoolTimeout, httpx.WriteTimeout) as exc:
+            # Connected, but the model didn't answer in time (usually still loading).
+            logger.warning("Ollama didn't answer within %ss: %r", config.REQUEST_TIMEOUT, exc)
+            yield _SLOW_ERROR
         except Exception as exc:
             logger.warning("Streaming error: %s", exc, exc_info=True)
             yield _FRIENDLY_ERROR

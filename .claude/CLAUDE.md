@@ -46,7 +46,9 @@ Built to be sold to a Linux distro company or privacy-focused tech company.
 - src/agent/ollama.py — Ollama API client + streaming
 - src/agent/parser.py — split action block from model response (split_action)
 - src/agent/actions.py — normalise + dispatch actions (preview vs. confirm)
-- src/agent/session.py — chat history + single background asyncio loop
+- src/agent/session.py — chat history, agent loop (≤ 5 steps, stops for confirmation/repeats), background asyncio loop
+- src/agent/step_log.py — JSON-lines log of agent steps (config dir/agent-steps.jsonl)
+- src/agent/ai_manager.py — status + controls for the AI tab
 - src/actions/files.py — file organization
 - src/actions/apps.py — app install + open
 - src/actions/search.py — Google search via browser
@@ -58,6 +60,7 @@ Built to be sold to a Linux distro company or privacy-focused tech company.
 - src/agent/setup.py — start-up flow: start/install Ollama, pick + download model
 - src/settings.py — saved settings (chosen model) in the OS config dir
 - src/ui/setup.py — first-run setup panel
+- src/ui/ai_settings.py — AI tab (Ollama status, models, download)
 - install.sh / install.ps1 — one-command per-user installers
 - tests/ — pytest suite; UI tests run headless (QT_QPA_PLATFORM=offscreen in conftest.py)
 
@@ -103,7 +106,8 @@ Built to be sold to a Linux distro company or privacy-focused tech company.
 Phase 1 complete — PyQt6 drawer, Ollama connection, all six v1 actions, notes tab.
 Phase 2 complete — one-command installers, automatic Ollama start/install, hardware-based
 model choice and download, single instance, log file.
-Next: system info chat action, model switching in-app, undo for file organization, packaging.
+Phase 3 — agent loop, AI tab (Ollama status/start/install, model switch/download/load), model warm-up.
+Next: system info chat action, undo for file organization, step-log rotation, packaging.
 
 ## Demo goal
 User types: "My downloads folder is a mess, fix it"

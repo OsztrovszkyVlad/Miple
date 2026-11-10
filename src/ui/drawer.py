@@ -9,8 +9,10 @@ from PyQt6.QtWidgets import (
 )
 
 from src.agent.actions import ActionResult
+from src.agent.ai_manager import AIManager, AIStatus
 from src.agent.session import AssistantSession, Reply
 from src.agent.setup import SetupFlow, SetupState, Stage
+from src.ui.ai_settings import AICallbacks, AISettingsView
 from src.ui.chat import ChatView
 from src.ui.notes import NotesView
 from src.ui.quickactions import QuickActionBar
@@ -36,6 +38,8 @@ class _Signals(QObject):
     reply = pyqtSignal(object)          # Reply
     action_result = pyqtSignal(object)  # ActionResult
     setup_state = pyqtSignal(object)    # SetupState
+    ai_status = pyqtSignal(object)      # AIStatus
+    model_changed = pyqtSignal(str)     # model name chosen in the AI tab
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +67,7 @@ class DrawerWindow(QWidget):
         self,
         session: AssistantSession | None = None,
         setup: SetupFlow | None = None,
+        ai: AIManager | None = None,
     ) -> None:
         """Initialise window, compute geometry, build UI, start animation."""
         super().__init__()
@@ -94,6 +99,12 @@ class DrawerWindow(QWidget):
         self._signals.action_result.connect(self._on_action_result)
         self._signals.setup_state.connect(self._on_setup_state)
         self._setup = setup or SetupFlow(self._signals.setup_state.emit)
+        self._signals.ai_status.connect(self._on_ai_status)
+        self._signals.model_changed.connect(self._on_model_changed)
+        self._ai = ai or AIManager(
+            self._signals.ai_status.emit, on_model_changed=self._signals.model_changed.emit
+        )
+        self._warmed_up = False
         self._pending_action: dict | None = None
         self._confirm_btn: QPushButton | None = None
 
@@ -103,7 +114,7 @@ class DrawerWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._close_drawer)
 
     def _build_ui(self) -> None:
-        """Build the pull tab and the content panel (chat + notes tabs)."""
+        """Build the pull tab and the content panel (Chat, Notes and AI tabs)."""
 
         # --- Pull tab (always visible, leftmost) ---
         self._tab = QPushButton("‹", self)
@@ -125,14 +136,17 @@ class DrawerWindow(QWidget):
 
         # --- Content panel (revealed as the window widens) ---
         self._content = QWidget(self)
-        self._content.setStyleSheet("background-color: #1e1e2e;")
+        self._content.setObjectName("mipleContent")
+        self._content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # Scoped: an unscoped background would paint a box behind every label.
+        self._content.setStyleSheet("#mipleContent { background-color: #1e1e2e; }")
 
         col = QVBoxLayout(self._content)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
         col.addWidget(self._build_header())
 
-        # Tab widget — Chat | Notes
+        # Tab widget — Chat | Notes | AI
         tabs = QTabWidget()
         tabs.setStyleSheet("""
             QTabWidget::pane  { border: none; background: #1e1e2e; }
@@ -171,6 +185,18 @@ class DrawerWindow(QWidget):
         self._chat_stack.addWidget(chat_page)
         tabs.addTab(self._chat_stack, "Chat")
         tabs.addTab(self._notes_view, "Notes")
+        self._ai_view = AISettingsView(AICallbacks(
+            refresh=self._ai.refresh,
+            start=self._ai.start_ollama,
+            install=self._ai.install_ollama,
+            load=self._ai.warm_up,
+            use=self._ai.use_model,
+            download=self._ai.download,
+        ))
+        self._ai_view.show_status(self._ai.status)
+        tabs.addTab(self._ai_view, "AI")
+        tabs.currentChanged.connect(self._on_tab_changed)
+        self._tabs = tabs
         col.addWidget(tabs, stretch=1)
 
         self._place_children()
@@ -363,12 +389,13 @@ class DrawerWindow(QWidget):
     # ------------------------------------------------------------------
 
     def _on_reply(self, reply: Reply) -> None:
-        """Show the model's reply and any action result."""
+        """Show the model's reply and the result of every action it took."""
         self._chat.hide_typing()
         if reply.text:
             self._chat.add_ai_message(reply.text)
-        if reply.action is not None:
-            self._on_action_result(reply.action)
+        results = reply.steps or ([reply.action] if reply.action is not None else [])
+        for result in results:
+            self._on_action_result(result)
         self._set_busy(False)
         self._notes_view.refresh()   # pick up any note saved during this turn
         self._entry.setFocus()
@@ -421,11 +448,37 @@ class DrawerWindow(QWidget):
                     "search the web, explain an error or save a note."
                 )
             self._ready = True
+            if not self._warmed_up:
+                self._warmed_up = True
+                self._ai.warm_up()  # load the model now, not on the first message
             return
         self._ready = False
         self._chat_stack.setCurrentIndex(0)
         if not state.busy:
             self.open_drawer()  # needs the user: make sure they see it
+
+    # ------------------------------------------------------------------
+    # AI tab
+    # ------------------------------------------------------------------
+
+    def _on_tab_changed(self, index: int) -> None:
+        """Refresh the AI tab whenever it is opened."""
+        if self._tabs.widget(index) is self._ai_view:
+            self._ai.refresh()
+
+    def _on_ai_status(self, status: AIStatus) -> None:
+        """Render the AI tab."""
+        self._ai_view.show_status(status)
+
+    def _on_model_changed(self, model: str) -> None:
+        """A model was picked or downloaded in the AI tab: chat with it from now on."""
+        self._warmed_up = True  # the AI tab loads it itself
+        self._on_setup_state(SetupState(Stage.READY, f"Ready — using {model}.", model=model))
+
+    def show_ai_tab(self) -> None:
+        """Open the drawer on the AI tab."""
+        self.open_drawer()
+        self._tabs.setCurrentWidget(self._ai_view)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop background work when the window closes."""
