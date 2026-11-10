@@ -52,7 +52,13 @@ Built to be sold to a Linux distro company or privacy-focused tech company.
 - src/actions/search.py — Google search via browser
 - src/actions/notes.py — note writer to ~/Documents/miple-notes/
 - src/actions/errors.py — error explainer + auto-fix
-- src/actions/system.py — (planned) system info; package manager detection lives in apps.py
+- src/actions/system.py — hardware detection (RAM, GPU/VRAM, CPU, disk), stdlib only
+- src/actions/ollama_runtime.py — find / start / install Ollama
+- src/agent/models.py — model catalogue + hardware-based recommendation
+- src/agent/setup.py — start-up flow: start/install Ollama, pick + download model
+- src/settings.py — saved settings (chosen model) in the OS config dir
+- src/ui/setup.py — first-run setup panel
+- install.sh / install.ps1 — one-command per-user installers
 - tests/ — pytest suite; UI tests run headless (QT_QPA_PLATFORM=offscreen in conftest.py)
 
 ## Features — v1
@@ -95,7 +101,9 @@ Built to be sold to a Linux distro company or privacy-focused tech company.
 
 ## Current phase
 Phase 1 complete — PyQt6 drawer, Ollama connection, all six v1 actions, notes tab.
-Next: system info action, undo for file organization, streaming display, packaging.
+Phase 2 complete — one-command installers, automatic Ollama start/install, hardware-based
+model choice and download, single instance, log file.
+Next: system info chat action, model switching in-app, undo for file organization, packaging.
 
 ## Demo goal
 User types: "My downloads folder is a mess, fix it"

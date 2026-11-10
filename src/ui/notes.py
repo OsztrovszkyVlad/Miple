@@ -66,8 +66,11 @@ class NoteReader(QWidget):
 
         toolbar = QWidget()
         toolbar.setFixedHeight(40)
+        toolbar.setObjectName("mipleNoteToolbar")
+        toolbar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # Scoped by object name so the border doesn't cascade onto child widgets.
         toolbar.setStyleSheet(
-            "background-color: #181825; border-bottom: 1px solid #313244;"
+            "#mipleNoteToolbar { background-color: #181825; border-bottom: 1px solid #313244; }"
         )
         tb = QHBoxLayout(toolbar)
         tb.setContentsMargins(8, 4, 8, 4)

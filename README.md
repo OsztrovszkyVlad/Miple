@@ -47,62 +47,125 @@ note. Nothing you type leaves your computer.
 - **Commands from the model are never executed.** Shell commands and error fixes
   are shown as copyable text only. Package and app names are validated, so they
   can't be smuggled in as command-line flags.
-- **Fully local.** The only network traffic is to your Ollama server
-  (`localhost` by default), plus your browser when you ask for a web search.
+- **Fully local.** While you chat, the only network traffic is to your Ollama
+  server (`localhost` by default), plus your browser when you ask for a web
+  search. Setup downloads Ollama and the model only after you click the button.
 
 ---
 
-## Requirements
+## Install
 
-- Linux desktop (developed on Fedora; targets Ubuntu 24.04+ and other Debian/Ubuntu derivatives)
-- Python **3.11+**
-- [Ollama](https://ollama.com/download) running locally
-- Recommended model: **Gemma 4 E4B** (`gemma4:e4b`). Any installed model works as a fallback.
-- Roughly 4 GB VRAM / 16 GB RAM for the default model
-- For app installs: **PackageKit** (`pkcon`) or **polkit** (`pkexec`). Both are present on most desktops.
+Works on Linux desktops (the main target: Ubuntu 24.04+, Fedora, Debian
+derivatives, Arch) and Windows 10/11; macOS runs from a checkout. Any machine
+with 8 GB of RAM or more works; a graphics card makes it faster.
 
-## Quick start
+One command. It needs no admin rights for Miple itself, and it doesn't ask you
+to install Python packages, Ollama or a model by hand.
+
+**Linux** (Ubuntu, Debian, Mint, Pop!_OS, Fedora, Arch…):
 
 ```bash
-# 1. Get a model
-ollama pull gemma4:e4b
-
-# 2. Get Miple
-git clone https://github.com/OsztrovszkyVlad/Miple.git
-cd Miple
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 3. Run it
-python main.py
+curl -fsSL https://raw.githubusercontent.com/OsztrovszkyVlad/Miple/main/install.sh | bash
 ```
 
+**Windows 10/11** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/OsztrovszkyVlad/Miple/main/install.ps1 | iex
+```
+
+The installer:
+
+1. finds Python 3.11+, or installs it (Linux: asks once before using `sudo`
+   for missing system packages such as `python3-venv` and Qt's
+   `libxcb-cursor0`; Windows: a per-user Python via `winget`);
+2. installs Miple into your user folder (`~/.local/share/miple` or
+   `%LOCALAPPDATA%\Miple`) in its own Python environment;
+3. adds **Miple** to your app menu / Start menu, with an icon;
+4. sets Miple to **start automatically when you log in**;
+5. starts Miple.
+
+Installer options: `--no-autostart`, `--no-launch`, `--uninstall` (Linux) /
+`-NoAutostart`, `-NoLaunch`, `-Uninstall` (Windows). Uninstalling keeps your
+notes and settings, as well as Ollama and its models.
+
+### First start: automatic setup
+
+The first time it opens, the sidebar walks you through setup, at most two clicks:
+
+| Step | What happens | You |
+|---|---|---|
+| Check your computer | Detects RAM, graphics card and its memory, CPU threads and free disk | — |
+| Ollama | Starts Ollama if it's installed but not running. If it's missing, offers to install it (`winget` on Windows; the official installer via the system password prompt on Linux) | click **Install Ollama** |
+| Pick a model | Chooses the best model your computer can run comfortably (table below) and explains why | — |
+| Download | Downloads it with a progress bar; if you already have another model, you can use that instead | click **Download** |
+| Ready | Remembers the choice; later starts skip straight to the chat | — |
+
+On later starts all of this runs silently in the background, including
+starting Ollama if it isn't running.
+
+**How the model is chosen.** Miple picks the largest model that either fits
+entirely in your graphics card's memory (fast), or runs comfortably shared
+between the graphics card and RAM (the smaller models only). It then makes
+sure the download fits on your disk.
+
+| Your computer | Model | Download |
+|---|---|---|
+| 8 GB RAM, no graphics card | Gemma 3 1B | 0.8 GB |
+| 12 GB RAM | Gemma 4 E2B | 4.6 GB |
+| 16 GB+ RAM, or a 4–10 GB graphics card | Gemma 4 E4B | 6.6 GB |
+| 12–20 GB graphics card | Gemma 4 12B | 8.0 GB |
+| 24 GB graphics card · Mac with 36 GB+ | Gemma 4 26B (MoE) | 18 GB |
+| 32 GB+ graphics card | Gemma 4 31B | 20 GB |
+
+To force a model, set `MIPLE_MODEL` (e.g. `MIPLE_MODEL=llama3.2:3b`). To
+let Miple choose again, for example after a hardware upgrade, start it with
+`miple --reset-model`.
+
+### Using it
+
 Click the **‹** tab on the right edge of the screen to open the drawer, and
-press **Esc** (or click **›**) to close it.
+press **Esc** (or click **›**) to close it. Launching Miple again from the
+menu just opens the drawer of the copy that's already running.
 
 ### Command-line options
 
 ```
-python main.py [--open] [--debug]
+miple [--open] [--debug] [--reset-model]
 
-  --open    start with the drawer already open
-  --debug   verbose logging to stderr (same as MIPLE_DEBUG=1)
+  --open          start with the drawer already open
+  --debug         verbose logging (same as MIPLE_DEBUG=1)
+  --reset-model   forget the chosen model and pick one for this computer again
 ```
 
 ### Configuration
 
-Everything is configured through environment variables:
+Everything is optional and set through environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `MIPLE_MODEL` | chosen automatically | Force a specific Ollama model |
 | `MIPLE_OLLAMA_URL` | `http://localhost:11434` | Ollama server address |
-| `MIPLE_MODEL` | `gemma4:e4b` | Preferred model; falls back to the first installed one |
 | `MIPLE_NOTES_DIR` | `~/Documents/miple-notes` | Where notes are saved |
 | `MIPLE_TIMEOUT` | `120` | Seconds to wait for a reply (the first load of a model is slow) |
+| `MIPLE_CONFIG_DIR` | see below | Where settings and the log file live |
 | `MIPLE_DEBUG` | unset | `1` turns on debug logging |
 
-Example: `MIPLE_MODEL=llama3.2:3b python main.py`
+Settings (the chosen model) and a rotating log file `miple.log` are kept in
+`~/.config/miple/` on Linux, `%APPDATA%\Miple\` on Windows and
+`~/Library/Application Support/Miple/` on macOS.
+
+### Running from a checkout (developers)
+
+```bash
+git clone https://github.com/OsztrovszkyVlad/Miple.git && cd Miple
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+python main.py --open
+```
+
+`./install.sh` (or `.\install.ps1`) run from a checkout installs that
+checkout instead of downloading it.
 
 ### Wayland
 
@@ -143,22 +206,30 @@ puts it.
 ```
 main.py                  entry point (CLI flags, logging, Qt platform)
 src/config.py            environment-driven settings
+src/settings.py          saved settings (chosen model) in the OS config folder
 src/agent/
   ollama.py              async Ollama client: streaming, model detection, friendly errors
   parser.py              find and strip the action block in a reply
   actions.py             normalise and dispatch actions; preview vs. confirm
   session.py             conversation state + background event loop
+  setup.py               start-up checks: start/install Ollama, pick + download a model
+  models.py              model catalogue and hardware-based recommendation
 src/actions/             everything that touches the system lives here
   files.py               organise a folder by file type (dry run, no overwrites)
   apps.py                open apps, install packages via PackageKit / pkexec
   search.py              web search in the default browser
   notes.py               save and list Markdown notes
   errors.py              heuristic error explanations
+  system.py              detect RAM, GPU memory, CPU threads, free disk
+  ollama_runtime.py      find, start and install Ollama
 src/ui/                  PyQt6 widgets only, no business logic
   drawer.py              the sliding window, input row, confirm flow
   chat.py                message bubbles, typing indicator
   notes.py               notes browser / reader
   quickactions.py        quick-action pill buttons
+  setup.py               first-run setup panel
+assets/                  app icon (svg, png, ico)
+install.sh, install.ps1  one-command installers
 tests/                   pytest suite (UI tests run headless)
 ```
 
@@ -188,8 +259,10 @@ Adding a new action:
 
 | Symptom | Fix |
 |---|---|
-| *"I couldn't connect to Ollama"* | Start it with `ollama serve` (or `systemctl start ollama`), and check `MIPLE_OLLAMA_URL`. |
-| *"Ollama doesn't have the model …"* | `ollama pull gemma4:e4b`, or set `MIPLE_MODEL` to a model you have (`ollama list`). |
+| Setup says Ollama didn't start | Restart the computer; on Linux check `systemctl status ollama`. Also check `MIPLE_OLLAMA_URL`. |
+| *"Ollama doesn't have the model …"* | Start Miple with `--reset-model` to run setup again, or set `MIPLE_MODEL` to a model you have (`ollama list`). |
+| Automatic Ollama install isn't offered | Your system has no `winget` (Windows) or `pkexec` + `curl` (Linux): install Ollama from https://ollama.com/download and click **Retry**. |
+| Something else | Look in `miple.log` (see *Configuration*), or start with `--debug`. |
 | The first reply is very slow | The model is loading into memory; later replies are much faster. Raise `MIPLE_TIMEOUT` if it times out. |
 | The drawer isn't on the screen edge | You're on native Wayland. Unset `QT_QPA_PLATFORM` so Miple can use XWayland. |
 | *"No install method available"* | Install PackageKit: `sudo apt install packagekit` or `sudo dnf install PackageKit`. |
@@ -197,7 +270,8 @@ Adding a new action:
 
 ## Roadmap
 
-- System info action (distro, disk, memory) via a `system.py` module
+- System info chat action (reuse `src/actions/system.py`)
+- Switch models from inside the app
 - Undo for file organization
 - Streaming replies token by token
-- `.deb` / Flatpak packaging and autostart entry
+- `.deb` / Flatpak packaging

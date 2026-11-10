@@ -72,6 +72,10 @@ class AssistantSession:
 
         threading.Thread(target=work, name="miple-confirm", daemon=True).start()
 
+    def set_model(self, model: str) -> None:
+        """Switch the model used for the following turns."""
+        self._client.set_model(model)
+
     def history(self) -> list[dict]:
         """Return a copy of the conversation so far."""
         with self._lock:

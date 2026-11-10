@@ -17,6 +17,14 @@ def isolated_notes_dir(tmp_path, monkeypatch):
     return notes
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Keep tests away from the real settings file and MIPLE_MODEL."""
+    monkeypatch.setenv("MIPLE_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(config, "MODEL_OVERRIDE", None)
+    return tmp_path / "config"
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """A single QApplication for all UI tests (skipped if PyQt6 is missing)."""
