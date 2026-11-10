@@ -34,9 +34,21 @@ function Say($msg)  { Write-Host "==> $msg" -ForegroundColor Magenta }
 function Warn($msg) { Write-Host "!!  $msg" -ForegroundColor Yellow }
 
 function Stop-Miple {
-    Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$AppDir*main.py*" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    $procs = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$AppDir*main.py*" }
+    foreach ($p in $procs) {
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $p.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+    }
+}
+
+function Remove-Folder($path) {
+    # Windows can hold a folder for a moment after the process using it exits.
+    for ($i = 0; $i -lt 10 -and (Test-Path $path); $i++) {
+        Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
+        if (Test-Path $path) { Start-Sleep -Milliseconds 500 }
+    }
+    if (Test-Path $path) { throw "Could not replace $path - close Miple and run the installer again." }
 }
 
 if ($Uninstall) {
@@ -96,7 +108,7 @@ Say "Using $(Invoke-Native { & $Python --version }) ($Python)"
 Stop-Miple
 New-Item -ItemType Directory -Force $MipleHome | Out-Null
 $staging = "$AppDir.new"
-Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+Remove-Folder $staging
 New-Item -ItemType Directory -Force $staging | Out-Null
 
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
@@ -118,8 +130,17 @@ if ($here -and (Test-Path (Join-Path $here 'main.py')) -and (Test-Path (Join-Pat
         Copy-Item -Destination $staging -Recurse -Force
     Remove-Item -Recurse -Force $zip, $unpack -ErrorAction SilentlyContinue
 }
-Remove-Item -Recurse -Force $AppDir -ErrorAction SilentlyContinue
-Move-Item $staging $AppDir
+# Replace the app folder's contents rather than the folder itself: an open
+# Explorer window or terminal can keep the folder (not its files) in use.
+New-Item -ItemType Directory -Force $AppDir | Out-Null
+for ($i = 0; $i -lt 10; $i++) {
+    Get-ChildItem -Force $AppDir | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Get-ChildItem -Force $AppDir)) { break }
+    Start-Sleep -Milliseconds 500
+}
+if (Get-ChildItem -Force $AppDir) { throw "Could not update $AppDir - close Miple and run the installer again." }
+Get-ChildItem -Force $staging | Move-Item -Destination $AppDir
+Remove-Folder $staging
 
 # ---------------------------------------------------------------------------
 # Python environment

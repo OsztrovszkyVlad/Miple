@@ -152,6 +152,9 @@ class FakeRuntime:
     def manual_install_hint(self):
         return "Get it from ollama.com"
 
+    def install_progress_text(self):
+        return "Installing Ollama…"
+
     def install_ollama(self, dry_run=True, on_complete=None):
         self.world.installed = True
         self.world.running = True
@@ -306,3 +309,45 @@ def test_latest_tag_counts_as_installed(world):
     flow, rec, _ = make_flow(world)
     flow.start()
     assert rec.wait(Stage.READY).model == "gemma4:latest"
+
+
+# ---------------------------------------------------------------------------
+# Ollama runtime install helpers
+# ---------------------------------------------------------------------------
+
+def test_install_runs_without_console_window(monkeypatch):
+    import subprocess
+    from src.actions import ollama_runtime
+
+    calls = {}
+
+    def fake_run(cmd, **kw):
+        calls.update(kw)
+        return subprocess.CompletedProcess(cmd, 0, "Successfully installed", "")
+
+    monkeypatch.setattr(ollama_runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(ollama_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(ollama_runtime.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    results = []
+    ollama_runtime._run_install(["winget"], lambda ok, msg: results.append((ok, msg)))
+    assert calls["creationflags"] == 0x08000000
+    assert calls["stdin"] is subprocess.DEVNULL
+    assert results == [(True, "Ollama installed.")]
+
+
+def test_describe_failure_skips_progress_noise():
+    import subprocess
+    from src.actions.ollama_runtime import describe_failure
+
+    out = (
+        "Found Ollama [Ollama.Ollama] Version 0.40.16\n"
+        "Downloading https://github.com/ollama/ollama/releases/download/v0.40.16/OllamaSetup.exe\n"
+        "  ██████████▒▒▒▒  500 MB / 1.2 GB\n"
+        "Installer failed with exit code: 1603\n"
+    )
+    result = subprocess.CompletedProcess(["winget"], -1978335226, out, "")
+    assert describe_failure(result) == (
+        "Installer failed with exit code: 1603; exit code -1978335226 / 0x8A150006"
+    )
+    only_noise = subprocess.CompletedProcess(["winget"], 1, "Downloading x\n", "")
+    assert describe_failure(only_noise) == "exit code 1"

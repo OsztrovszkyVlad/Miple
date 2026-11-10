@@ -192,7 +192,7 @@ class SetupFlow:
         self._use_model(tag)
 
     def _install_ollama(self) -> None:
-        self._emit(Stage.INSTALLING_OLLAMA, "Installing Ollama… confirm the system prompt if one appears.")
+        self._emit(Stage.INSTALLING_OLLAMA, self._runtime.install_progress_text())
 
         def done(ok: bool, message: str) -> None:
             if ok:

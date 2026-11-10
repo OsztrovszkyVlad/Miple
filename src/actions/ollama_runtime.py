@@ -56,6 +56,8 @@ def start_server() -> bool:
             stderr=subprocess.DEVNULL,
             start_new_session=sys.platform != "win32",
             creationflags=flags,
+            # Don't let the long-lived server inherit (and lock) Miple's app folder.
+            cwd=str(Path.home()),
         )
     except OSError as exc:
         logger.warning("Could not start Ollama: %s", exc)
@@ -78,6 +80,16 @@ def install_command() -> list[str] | None:
     if sys.platform == "darwin" and shutil.which("brew"):
         return ["brew", "install", "ollama"]
     return None
+
+
+def install_progress_text() -> str:
+    """What to show while the install runs."""
+    if sys.platform.startswith("linux"):
+        return (
+            "Installing Ollama… enter your password in the dialog that appears. "
+            "This takes a few minutes."
+        )
+    return "Installing Ollama… this takes a few minutes (about 1 GB to download)."
 
 
 def manual_install_hint() -> str:
@@ -110,12 +122,36 @@ def install_ollama(
     return "Installing Ollama… this can take a few minutes."
 
 
+def no_window_flags() -> int:
+    """Windows: run console tools without popping up a console window.
+
+    Miple is started without a console (pythonw), so Windows would otherwise
+    open an empty one for winget — and closing it kills the install.
+    """
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
 def _run_install(cmd: list[str], on_complete: Callable[[bool, str], None] | None) -> None:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_INSTALL_TIMEOUT_S)
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_INSTALL_TIMEOUT_S,
+            creationflags=no_window_flags(),
+        )
         ok = result.returncode == 0 or find_ollama() is not None
-        tail = (result.stderr or result.stdout).strip().splitlines()[-1:] if not ok else []
-        msg = "Ollama installed." if ok else "Ollama install failed. " + " ".join(tail)
+        if ok:
+            msg = "Ollama installed."
+        else:
+            logger.warning(
+                "Ollama install exited with %s:\n%s\n%s",
+                result.returncode, result.stdout, result.stderr,
+            )
+            msg = f"Ollama install failed ({describe_failure(result)})."
     except subprocess.TimeoutExpired:
         ok, msg = False, "Ollama install timed out."
     except OSError as exc:
@@ -123,3 +159,23 @@ def _run_install(cmd: list[str], on_complete: Callable[[bool, str], None] | None
     logger.info("Ollama install result: %s", msg)
     if on_complete:
         on_complete(ok, msg)
+
+
+# Progress lines and banners that say nothing about why an install failed.
+_NOISE = ("Downloading ", "Found ", "This application is licensed", "Microsoft is not responsible",
+          "Successfully verified", "Starting package install")
+
+
+def describe_failure(result: subprocess.CompletedProcess) -> str:
+    """Short reason for a failed install: the last meaningful output line + exit code."""
+    lines = [
+        line.strip()
+        for line in f"{result.stdout or ''}\n{result.stderr or ''}".splitlines()
+        if line.strip()
+        and any(ch.isalnum() for ch in line)
+        and not line.strip().startswith(_NOISE)
+        and "█" not in line and "▒" not in line
+    ]
+    code = result.returncode
+    code_text = f"exit code {code}" + (f" / 0x{code & 0xFFFFFFFF:08X}" if code < 0 or code > 255 else "")
+    return f"{lines[-1]}; {code_text}" if lines else code_text
