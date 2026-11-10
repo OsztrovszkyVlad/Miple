@@ -1,6 +1,5 @@
 """Chat UI components — MessageBubble, TypingIndicator, ChatView."""
 import logging
-from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -16,7 +15,7 @@ _FG_USER = "#ffffff"
 _FG_AI = "#cdd6f4"
 _BG_CHAT = "#1e1e2e"
 
-# Bubble max width as a fraction of the content panel
+# Maximum bubble width in pixels
 _BUBBLE_MAX_PX = 300
 
 
@@ -31,11 +30,18 @@ class MessageBubble(QWidget):
         fg = _FG_USER if is_user else _FG_AI
 
         self._label = QLabel(text)
+        # AI replies may contain Markdown (e.g. fenced fix commands); user
+        # text is always shown verbatim.
+        self._label.setTextFormat(
+            Qt.TextFormat.PlainText if is_user else Qt.TextFormat.MarkdownText
+        )
         self._label.setWordWrap(True)
         self._label.setMaximumWidth(_BUBBLE_MAX_PX)
         self._label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByMouse
         )
+        self._label.setOpenExternalLinks(True)
         self._label.setStyleSheet(f"""
             QLabel {{
                 background-color: {bg};
@@ -122,7 +128,7 @@ class ChatView(QScrollArea):
 
         self._typing = TypingIndicator()
         self._typing_visible = False
-        self._last_ai_bubble: Optional[MessageBubble] = None
+        self._last_ai_bubble: MessageBubble | None = None
 
     def add_user_message(self, text: str) -> None:
         """Append a user message bubble."""

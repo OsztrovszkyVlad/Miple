@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.agent.ollama import OllamaClient, _FRIENDLY_ERROR
+from src.agent.ollama import OllamaClient, _FRIENDLY_ERROR, is_error_message
 from src.agent.parser import extract_action
 
 
@@ -130,7 +130,7 @@ def test_chat_streams_tokens():
          patch.object(client, "get_model", new=AsyncMock(return_value="gemma4:e4b")):
         tokens = run(_collect())
 
-    assert tokens == ["Hello", " world"]  # "!" has done=True so it's excluded
+    assert tokens == ["Hello", " world", "!"]  # content on the done chunk is kept
 
 
 def test_chat_connection_error():
@@ -178,3 +178,52 @@ def test_extract_action_malformed():
     """Returns None (no exception) for a broken action-like string."""
     result = extract_action("{action: 'broken', params: {unclosed")
     assert result is None
+
+
+def test_get_model_is_cached():
+    """The model list is fetched once, not on every message."""
+    client = OllamaClient()
+    resp = _mock_response(200, {"models": [{"name": "llama3:latest"}]})
+    get = AsyncMock(return_value=resp)
+    with patch.object(client._client, "get", new=get):
+        run(client.get_model())
+        run(client.get_model())
+    assert get.await_count == 1
+
+
+def test_get_model_not_cached_on_failure():
+    """A failed lookup is retried next time instead of being cached."""
+    import httpx
+    client = OllamaClient()
+    get = AsyncMock(side_effect=httpx.ConnectError("down"))
+    with patch.object(client._client, "get", new=get):
+        run(client.get_model())
+        run(client.get_model())
+    assert get.await_count == 2
+
+
+def test_chat_missing_model_message():
+    """A 404 from Ollama tells the user which model to pull."""
+    import httpx
+    client = OllamaClient()
+    request = httpx.Request("POST", "http://x/api/chat")
+    response = httpx.Response(404, request=request)
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError("404", request=request, response=response)
+    )
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    async def _collect():
+        return [t async for t in client.chat([{"role": "user", "content": "hi"}])]
+
+    with patch.object(client._client, "stream", return_value=cm), \
+         patch.object(client, "get_model", new=AsyncMock(return_value="gemma4:e4b")):
+        tokens = run(_collect())
+
+    assert len(tokens) == 1
+    assert "ollama pull gemma4:e4b" in tokens[0]
+    assert is_error_message(tokens[0])

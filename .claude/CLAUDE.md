@@ -2,24 +2,26 @@
 
 ## What this is
 A local-first AI desktop assistant for Linux.
-A GTK4 sidebar drawer that slides in from the right side of the screen.
+A PyQt6 sidebar drawer that slides in from the right side of the screen.
 Runs Gemma 4 (E4B) via Ollama entirely on the user's machine.
 No data leaves the user's machine. Ever.
 Built to be sold to a Linux distro company or privacy-focused tech company.
 
 ## Product vision
 - The pull tab is always visible on the right screen edge
-- Clicking it slides open a 300px drawer — the tab moves WITH the drawer
+- Clicking it slides open a 430px drawer — the tab moves WITH the drawer
 - Only the pull tab is visible when closed
 - Feels native, unobtrusive, always accessible
 
 ## Stack
 - Python 3.11+
-- GTK4 via PyGObject
-- Ollama at http://localhost:11434
-- Primary model: Gemma 4 E4B (gemma4:e4b)
+- PyQt6 (UI) + httpx (Ollama client)
+- Ollama at http://localhost:11434 (override: MIPLE_OLLAMA_URL)
+- Primary model: Gemma 4 E4B (gemma4:e4b) (override: MIPLE_MODEL)
 - Fallback: any available Ollama model
-- Display server: Wayland (GTK4 native — no X11 assumptions)
+- Display server: X11, or Wayland via XWayland (main.py sets QT_QPA_PLATFORM=xcb
+  because native Wayland forbids client-side window positioning)
+- All settings live in src/config.py and come from environment variables
 
 ## Target OS
 - Development machine: Fedora 43
@@ -36,19 +38,22 @@ Built to be sold to a Linux distro company or privacy-focused tech company.
 - Any machine from 2019 onwards
 
 ## Architecture
-- src/ui/drawer.py — GTK4 drawer widget + pull tab + animation
+- src/config.py — environment-driven settings
+- src/ui/drawer.py — PyQt6 drawer window + pull tab + width animation
 - src/ui/chat.py — chat bubble components
+- src/ui/notes.py — notes browser tab
 - src/ui/quickactions.py — quick action pill buttons
 - src/agent/ollama.py — Ollama API client + streaming
-- src/agent/parser.py — extract action JSON from model response
-- src/agent/actions.py — central action dispatcher
+- src/agent/parser.py — split action block from model response (split_action)
+- src/agent/actions.py — normalise + dispatch actions (preview vs. confirm)
+- src/agent/session.py — chat history + single background asyncio loop
 - src/actions/files.py — file organization
 - src/actions/apps.py — app install + open
 - src/actions/search.py — Google search via browser
 - src/actions/notes.py — note writer to ~/Documents/miple-notes/
 - src/actions/errors.py — error explainer + auto-fix
-- src/actions/system.py — package manager detection + system info
-- tests/ — one test file per module
+- src/actions/system.py — (planned) system info; package manager detection lives in apps.py
+- tests/ — pytest suite; UI tests run headless (QT_QPA_PLATFORM=offscreen in conftest.py)
 
 ## Features — v1
 1. File organization — scan folder, sort into subfolders by type (documents, images, music, video, archives, code)
@@ -89,7 +94,8 @@ Built to be sold to a Linux distro company or privacy-focused tech company.
 - Never carry unrelated context between sessions
 
 ## Current phase
-Phase 1 — GTK4 drawer UI with pull tab animation + Ollama connection + file organization action
+Phase 1 complete — PyQt6 drawer, Ollama connection, all six v1 actions, notes tab.
+Next: system info action, undo for file organization, streaming display, packaging.
 
 ## Demo goal
 User types: "My downloads folder is a mess, fix it"
