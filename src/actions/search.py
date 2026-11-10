@@ -15,6 +15,9 @@ def google_search(query: str) -> str:
     Returns:
         Confirmation message string.
     """
+    query = query.strip()
+    if not query:
+        return "What should I search for?"
     url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
     webbrowser.open(url)
     logger.debug("Opened search: %s", url)

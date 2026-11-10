@@ -1,5 +1,6 @@
 """App launcher and installer."""
 import logging
+import re
 import shutil
 import subprocess
 import threading
@@ -7,41 +8,78 @@ from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
+_INSTALL_TIMEOUT_S = 600  # big packages + time to answer the polkit prompt
+
+INSTALL_PREVIEW_PREFIX = "Would run:"
+"""Every successful install dry-run preview starts with this string."""
+
+# Package / executable names: letters, digits and . + _ - ; must not start
+# with '-' so a name can never be interpreted as a command-line option.
+_VALID_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,99}$")
+
+_FILE_MANAGERS = ["nautilus", "nemo", "thunar", "dolphin", "caja", "pcmanfm"]
 
 _COMMON_APPS: dict[str, list[str]] = {
-    "files":        ["nautilus", "thunar", "dolphin", "nemo"],
-    "file":         ["nautilus", "thunar", "dolphin", "nemo"],
-    "file_browser": ["nautilus", "thunar", "dolphin", "nemo"],
-    "file_manager": ["nautilus", "thunar", "dolphin", "nemo"],
-    "terminal":     ["gnome-terminal", "konsole", "xterm", "alacritty"],
-    "browser":      ["firefox", "chromium", "google-chrome"],
-    "editor":       ["gedit", "kate", "mousepad", "xed"],
-    "calculator":   ["gnome-calculator", "kcalc", "galculator"],
+    "files": _FILE_MANAGERS,
+    "file": _FILE_MANAGERS,
+    "file_browser": _FILE_MANAGERS,
+    "file_manager": _FILE_MANAGERS,
+    "file manager": _FILE_MANAGERS,
+    "terminal": [
+        "gnome-terminal", "kgx", "ptyxis", "konsole", "xfce4-terminal",
+        "alacritty", "kitty", "xterm",
+    ],
+    "browser": ["firefox", "chromium", "chromium-browser", "google-chrome", "brave-browser"],
+    "web browser": ["firefox", "chromium", "chromium-browser", "google-chrome", "brave-browser"],
+    "editor": ["gnome-text-editor", "gedit", "kate", "mousepad", "xed", "pluma"],
+    "text editor": ["gnome-text-editor", "gedit", "kate", "mousepad", "xed", "pluma"],
+    "calculator": ["gnome-calculator", "kcalc", "galculator", "qalculate-gtk"],
+    "settings": ["gnome-control-center", "systemsettings", "xfce4-settings-manager"],
+    "code": ["code", "codium"],
+    "vscode": ["code", "codium"],
 }
+
+
+def is_valid_name(name: str) -> bool:
+    """Return True if *name* is a safe package / executable name."""
+    return bool(_VALID_NAME_RE.match(name))
 
 
 def open_app(name: str) -> str:
     """Launch *name* as a detached subprocess.
 
     Generic names like 'files' or 'terminal' are resolved to the first
-    installed candidate from *_COMMON_APPS* before launching.
+    installed candidate from *_COMMON_APPS* before launching. Only
+    executables found on PATH are launched.
 
     Args:
-        name: Executable name, path, or a common alias ('files', 'terminal', …).
+        name: Executable name or a common alias ('files', 'terminal', …).
 
     Returns:
         Human-readable status string.
     """
-    candidates = _COMMON_APPS.get(name.lower().strip(), [name])
+    key = name.lower().strip()
+    if not key:
+        return "Which app should I open?"
+    candidates = _COMMON_APPS.get(key, [key.replace(" ", "-")])
     for candidate in candidates:
-        if shutil.which(candidate) is None and candidate != name:
+        if not is_valid_name(candidate):
+            continue
+        executable = shutil.which(candidate)
+        if executable is None:
             continue
         try:
-            subprocess.Popen([candidate], start_new_session=True)
-            logger.debug("Launched: %s", candidate)
-            return f"Launching {candidate}…"
-        except FileNotFoundError:
+            subprocess.Popen(
+                [executable],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            logger.warning("Failed to launch %s: %s", executable, exc)
             continue
+        logger.debug("Launched: %s", executable)
+        return f"Launching {candidate}…"
     return f"Could not find '{name}'. Make sure it's installed and in your PATH."
 
 
@@ -70,6 +108,9 @@ def install_app(
     Returns:
         Command preview (dry_run) or "please wait" status (not dry_run).
     """
+    name = name.strip()
+    if not is_valid_name(name):
+        return f"'{name}' doesn't look like a valid package name."
     cmd = _build_install_cmd(name)
     if cmd is None:
         return (
@@ -77,7 +118,7 @@ def install_app(
             "Install PackageKit (`dnf install PackageKit` or `apt install packagekit`) and try again."
         )
     if dry_run:
-        return f"Would run: {' '.join(cmd)}"
+        return f"{INSTALL_PREVIEW_PREFIX} `{' '.join(cmd)}`"
     threading.Thread(
         target=_run_install, args=(cmd, name, on_complete), daemon=True
     ).start()
@@ -91,11 +132,17 @@ def _run_install(
 ) -> None:
     """Run *cmd* synchronously and report the outcome via *on_complete*."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=_INSTALL_TIMEOUT_S
+        )
         if result.returncode == 0:
             msg = f"✓ {name} installed successfully."
         else:
-            msg = f"✗ Failed to install {name}. Check your internet connection or try again."
+            logger.warning("Install of %s failed: %s", name, result.stderr.strip())
+            detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
+            msg = f"✗ Failed to install {name}."
+            if detail:
+                msg += f" {detail[0]}"
     except subprocess.TimeoutExpired:
         msg = f"✗ Install timed out for {name}."
     except Exception as exc:

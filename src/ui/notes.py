@@ -1,6 +1,7 @@
 """Notes tab — browse and read notes saved by Miple."""
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
@@ -9,15 +10,15 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-logger = logging.getLogger(__name__)
+from src.actions.notes import list_notes
 
-_NOTES_DIR = Path.home() / "Documents" / "miple-notes"
+logger = logging.getLogger(__name__)
 
 
 class NoteCard(QFrame):
     """Clickable card showing a note's title and first-line preview."""
 
-    def __init__(self, path: Path, on_click) -> None:
+    def __init__(self, path: Path, on_click: Callable[[Path], None]) -> None:
         """Create a card for the note at *path*."""
         super().__init__()
         self._path = path
@@ -54,7 +55,7 @@ class NoteCard(QFrame):
 class NoteReader(QWidget):
     """Full-text view of a single note with a back button."""
 
-    def __init__(self, on_back) -> None:
+    def __init__(self, on_back: Callable[[], None]) -> None:
         """Create a reader; *on_back* is called when the back button is clicked."""
         super().__init__()
         self.setStyleSheet("background-color: #1e1e2e;")
@@ -174,8 +175,7 @@ class NotesView(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        _NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        notes = sorted(_NOTES_DIR.glob("*.md"), reverse=True)
+        notes = list_notes()
 
         if not notes:
             lbl = QLabel("No notes yet.\nAsk Miple to save a note!")
@@ -209,6 +209,7 @@ class NotesView(QWidget):
 def _friendly_title(path: Path) -> str:
     """Convert a timestamped filename stem to a readable title."""
     name = re.sub(r"^\d{4}-\d{2}-\d{2}_\d{6}_?", "", path.stem)
+    name = re.sub(r"-\d+$", "", name)  # collision suffix added by save_note
     return name.replace("_", " ").strip() or path.stem
 
 

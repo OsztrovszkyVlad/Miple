@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from src import config
+
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
@@ -26,7 +28,24 @@ _FRIENDLY_ERROR = (
     "Make sure Ollama is running (`ollama serve`) and try again."
 )
 
-_DEFAULT_MODEL = "gemma4:e4b"
+_MODEL_MISSING_PREFIX = "Ollama doesn't have the model"
+
+_DEFAULT_MODEL = config.DEFAULT_MODEL
+
+
+def is_error_message(text: str) -> bool:
+    """Return True if *text* is one of the client's user-facing error messages."""
+    return text == _FRIENDLY_ERROR or text.startswith(_MODEL_MISSING_PREFIX)
+
+
+def _http_error_message(exc: httpx.HTTPStatusError, model: str) -> str:
+    """Turn an HTTP error from Ollama into a friendly chat message."""
+    if exc.response.status_code == 404:
+        return (
+            f"{_MODEL_MISSING_PREFIX} '{model}'. "
+            f"Install it with `ollama pull {model}` and try again."
+        )
+    return _FRIENDLY_ERROR
 
 
 class OllamaClient:
@@ -36,14 +55,17 @@ class OllamaClient:
     message yielded back to callers via the chat() async generator.
     """
 
-    def __init__(self, base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, base_url: str = config.OLLAMA_URL) -> None:
         """Create the client.
 
         Args:
             base_url: Base URL of the Ollama server.
         """
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(config.REQUEST_TIMEOUT, connect=5.0)
+        )
+        self._model: str | None = None
 
     # ------------------------------------------------------------------
     # Availability & model detection
@@ -59,7 +81,16 @@ class OllamaClient:
             return False
 
     async def get_model(self) -> str:
-        """Return the model to use — prefers gemma4:e4b, falls back to first available."""
+        """Return the model to use — prefers the default, falls back to first available.
+
+        The result is cached after the first successful lookup.
+        """
+        if self._model is None:
+            self._model = await self._detect_model()
+        return self._model or _DEFAULT_MODEL
+
+    async def _detect_model(self) -> str | None:
+        """Query /api/tags and pick a model; None if it can't be determined."""
         try:
             resp = await self._client.get(f"{self._base_url}/api/tags")
             resp.raise_for_status()
@@ -68,11 +99,12 @@ class OllamaClient:
             if _DEFAULT_MODEL in names:
                 return _DEFAULT_MODEL
             if names:
-                logger.info("gemma4:e4b not found; using %s", names[0])
+                logger.info("%s not found; using %s", _DEFAULT_MODEL, names[0])
                 return names[0]
+            logger.warning("Ollama has no models installed")
         except Exception as exc:
             logger.warning("Could not fetch model list: %s", exc)
-        return _DEFAULT_MODEL
+        return None
 
     # ------------------------------------------------------------------
     # Chat
@@ -120,11 +152,14 @@ class OllamaClient:
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if data.get("done"):
-                        break
                     content = data.get("message", {}).get("content", "")
                     if content:
                         yield content
+                    if data.get("done"):
+                        break
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Ollama returned an error: %s", exc)
+            yield _http_error_message(exc, payload.get("model", ""))
         except Exception as exc:
             logger.warning("Streaming error: %s", exc, exc_info=True)
             yield _FRIENDLY_ERROR
