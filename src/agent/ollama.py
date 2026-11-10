@@ -2,6 +2,7 @@
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 import httpx
 
@@ -31,6 +32,20 @@ _FRIENDLY_ERROR = (
 _MODEL_MISSING_PREFIX = "Ollama doesn't have the model"
 
 _DEFAULT_MODEL = config.DEFAULT_MODEL
+
+
+@dataclass(frozen=True)
+class PullProgress:
+    """One progress update from a model download."""
+
+    status: str
+    completed: int = 0
+    total: int = 0
+
+    @property
+    def fraction(self) -> float | None:
+        """0–1 while bytes are downloading, else None."""
+        return self.completed / self.total if self.total else None
 
 
 def is_error_message(text: str) -> bool:
@@ -89,22 +104,57 @@ class OllamaClient:
             self._model = await self._detect_model()
         return self._model or _DEFAULT_MODEL
 
-    async def _detect_model(self) -> str | None:
-        """Query /api/tags and pick a model; None if it can't be determined."""
+    def set_model(self, model: str) -> None:
+        """Use *model* from now on (e.g. the one chosen during setup)."""
+        logger.info("Using model %s", model)
+        self._model = model
+
+    async def list_models(self) -> list[str] | None:
+        """Return installed model names, or None if Ollama can't be reached."""
         try:
             resp = await self._client.get(f"{self._base_url}/api/tags")
             resp.raise_for_status()
             models: list[dict] = resp.json().get("models", [])
-            names = [m["name"] for m in models if "name" in m]
-            if _DEFAULT_MODEL in names:
-                return _DEFAULT_MODEL
-            if names:
-                logger.info("%s not found; using %s", _DEFAULT_MODEL, names[0])
-                return names[0]
-            logger.warning("Ollama has no models installed")
         except Exception as exc:
             logger.warning("Could not fetch model list: %s", exc)
-        return None
+            return None
+        return [m["name"] for m in models if "name" in m]
+
+    async def pull(self, model: str) -> AsyncIterator[PullProgress]:
+        """Download *model*, yielding progress updates.
+
+        Raises:
+            httpx.HTTPError / RuntimeError: if the download fails.
+        """
+        url = f"{self._base_url}/api/pull"
+        timeout = httpx.Timeout(None, connect=10.0)  # big downloads take a while
+        async with self._client.stream(
+            "POST", url, json={"model": model, "stream": True}, timeout=timeout
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                data = json.loads(line)
+                if "error" in data:
+                    raise RuntimeError(data["error"])
+                yield PullProgress(
+                    status=data.get("status", ""),
+                    completed=int(data.get("completed") or 0),
+                    total=int(data.get("total") or 0),
+                )
+
+    async def _detect_model(self) -> str | None:
+        """Pick the default model, else the first installed one."""
+        names = await self.list_models()
+        if not names:
+            if names == []:
+                logger.warning("Ollama has no models installed")
+            return None
+        if _DEFAULT_MODEL in names:
+            return _DEFAULT_MODEL
+        logger.info("%s not found; using %s", _DEFAULT_MODEL, names[0])
+        return names[0]
 
     # ------------------------------------------------------------------
     # Chat

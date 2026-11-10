@@ -130,6 +130,10 @@ class ChatView(QScrollArea):
         self._typing_visible = False
         self._last_ai_bubble: MessageBubble | None = None
 
+    def has_messages(self) -> bool:
+        """True once any message bubble has been added."""
+        return bool(self._container.findChildren(MessageBubble))
+
     def add_user_message(self, text: str) -> None:
         """Append a user message bubble."""
         self.hide_typing()

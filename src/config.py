@@ -9,8 +9,11 @@ from pathlib import Path
 OLLAMA_URL: str = os.environ.get("MIPLE_OLLAMA_URL", "http://localhost:11434")
 """Base URL of the Ollama server."""
 
-DEFAULT_MODEL: str = os.environ.get("MIPLE_MODEL", "gemma4:e4b")
-"""Preferred Ollama model; the first installed model is used if it is missing."""
+MODEL_OVERRIDE: str | None = os.environ.get("MIPLE_MODEL") or None
+"""Model forced by the user; skips the automatic hardware-based choice."""
+
+DEFAULT_MODEL: str = MODEL_OVERRIDE or "gemma4:e4b"
+"""Fallback model when setup hasn't picked one yet."""
 
 NOTES_DIR: Path = Path(
     os.environ.get("MIPLE_NOTES_DIR", Path.home() / "Documents" / "miple-notes")

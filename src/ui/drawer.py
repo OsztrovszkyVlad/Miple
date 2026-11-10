@@ -1,18 +1,20 @@
 """DrawerWindow — frameless right-edge sidebar for Miple (PyQt6)."""
 import logging
 
-from PyQt6.QtCore import QEasingCurve, QObject, Qt, QVariantAnimation, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QObject, Qt, QTimer, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTabWidget, QVBoxLayout, QWidget,
+    QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from src.agent.actions import ActionResult
 from src.agent.session import AssistantSession, Reply
+from src.agent.setup import SetupFlow, SetupState, Stage
 from src.ui.chat import ChatView
 from src.ui.notes import NotesView
 from src.ui.quickactions import QuickActionBar
+from src.ui.setup import SetupPanel
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class _Signals(QObject):
 
     reply = pyqtSignal(object)          # Reply
     action_result = pyqtSignal(object)  # ActionResult
+    setup_state = pyqtSignal(object)    # SetupState
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +59,11 @@ class DrawerWindow(QWidget):
     Esc closes the drawer.
     """
 
-    def __init__(self, session: AssistantSession | None = None) -> None:
+    def __init__(
+        self,
+        session: AssistantSession | None = None,
+        setup: SetupFlow | None = None,
+    ) -> None:
         """Initialise window, compute geometry, build UI, start animation."""
         super().__init__()
 
@@ -80,15 +87,19 @@ class DrawerWindow(QWidget):
 
         # Assistant
         self._session = session or AssistantSession()
+        self._ready = False
         self._busy = False
         self._signals = _Signals()
         self._signals.reply.connect(self._on_reply)
         self._signals.action_result.connect(self._on_action_result)
+        self._signals.setup_state.connect(self._on_setup_state)
+        self._setup = setup or SetupFlow(self._signals.setup_state.emit)
         self._pending_action: dict | None = None
         self._confirm_btn: QPushButton | None = None
 
         self._build_ui()
         self._setup_animation()
+        QTimer.singleShot(0, self._setup.start)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._close_drawer)
 
     def _build_ui(self) -> None:
@@ -151,7 +162,14 @@ class DrawerWindow(QWidget):
         # Notes page
         self._notes_view = NotesView()
 
-        tabs.addTab(chat_page, "Chat")
+        self._setup_panel = SetupPanel(
+            on_primary=self._setup.primary, on_secondary=self._setup.secondary
+        )
+        self._setup_panel.show_state(self._setup.state)
+        self._chat_stack = QStackedWidget()
+        self._chat_stack.addWidget(self._setup_panel)
+        self._chat_stack.addWidget(chat_page)
+        tabs.addTab(self._chat_stack, "Chat")
         tabs.addTab(self._notes_view, "Notes")
         col.addWidget(tabs, stretch=1)
 
@@ -176,8 +194,11 @@ class DrawerWindow(QWidget):
         """Purple-circle M avatar  |  Miple / your AI, locally."""
         header = QWidget()
         header.setFixedHeight(64)
+        header.setObjectName("mipleHeader")
+        header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # Scoped by object name so the border doesn't cascade onto child widgets.
         header.setStyleSheet(
-            "background-color: #181825; border-bottom: 1px solid #313244;"
+            "#mipleHeader { background-color: #181825; border-bottom: 1px solid #313244; }"
         )
 
         layout = QHBoxLayout(header)
@@ -206,6 +227,7 @@ class DrawerWindow(QWidget):
             "color: #cdd6f4; font-weight: bold; font-size: 15px;"
         )
         sub_lbl = QLabel("your AI, locally")
+        self._subtitle = sub_lbl
         sub_lbl.setStyleSheet("color: #6c7086; font-size: 11px;")
         text_layout.addWidget(name_lbl)
         text_layout.addWidget(sub_lbl)
@@ -218,8 +240,11 @@ class DrawerWindow(QWidget):
     def _build_input_row(self) -> QWidget:
         """Text entry + Send button at the bottom of the content panel."""
         row = QWidget()
+        row.setObjectName("mipleInputRow")
+        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # Scoped by object name so the border doesn't cascade onto child widgets.
         row.setStyleSheet(
-            "background-color: #181825; border-top: 1px solid #313244;"
+            "#mipleInputRow { background-color: #181825; border-top: 1px solid #313244; }"
         )
 
         layout = QHBoxLayout(row)
@@ -316,7 +341,7 @@ class DrawerWindow(QWidget):
     def _on_send(self) -> None:
         """Validate input and hand it to the assistant session."""
         text = self._entry.text().strip()
-        if not text or self._busy:
+        if not text or self._busy or not self._ready:
             return
         self._clear_confirm_button()
         self._entry.clear()
@@ -378,6 +403,29 @@ class DrawerWindow(QWidget):
             self._quick_bar.remove_confirm_button(self._confirm_btn)
             self._confirm_btn = None
         self._pending_action = None
+
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
+
+    def _on_setup_state(self, state: SetupState) -> None:
+        """Show setup progress; switch to the chat once everything is ready."""
+        self._setup_panel.show_state(state)
+        if state.stage is Stage.READY and state.model:
+            self._session.set_model(state.model)
+            self._subtitle.setText(f"your AI, locally · {state.model}")
+            self._chat_stack.setCurrentIndex(1)
+            if not self._ready and not self._chat.has_messages():
+                self._chat.add_ai_message(
+                    "Hi! I'm Miple. Ask me to tidy a folder, open or install an app, "
+                    "search the web, explain an error or save a note."
+                )
+            self._ready = True
+            return
+        self._ready = False
+        self._chat_stack.setCurrentIndex(0)
+        if not state.busy:
+            self.open_drawer()  # needs the user: make sure they see it
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop background work when the window closes."""
